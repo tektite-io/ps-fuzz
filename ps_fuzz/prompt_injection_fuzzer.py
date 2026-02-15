@@ -21,6 +21,28 @@ BRIGHT_CYAN = colorama.Fore.CYAN + colorama.Style.BRIGHT
 RED = colorama.Fore.RED
 GREEN = colorama.Fore.GREEN
 BRIGHT_YELLOW = colorama.Fore.LIGHTYELLOW_EX + colorama.Style.BRIGHT
+ORANGE = colorama.Fore.LIGHTYELLOW_EX
+
+def _build_client_kwargs(app_config: AppConfig, provider: str, model: str, temperature: float) -> dict:
+    """Build kwargs for ClientLangChain based on provider and app config"""
+    kwargs = {'model': model, 'temperature': temperature}
+    
+    # Add provider-specific base URLs if configured
+    if provider == 'ollama' and hasattr(app_config, 'ollama_base_url') and app_config.ollama_base_url:
+        kwargs['ollama_base_url'] = app_config.ollama_base_url
+    elif provider == 'open_ai' and hasattr(app_config, 'openai_base_url') and app_config.openai_base_url:
+        kwargs['openai_base_url'] = app_config.openai_base_url
+    
+    return kwargs
+
+def _build_embedding_config(app_config: AppConfig) -> dict:
+    """Build embedding configuration object with only embedding-specific properties"""
+    return {
+        'embedding_provider': getattr(app_config, 'embedding_provider', ''),
+        'embedding_model': getattr(app_config, 'embedding_model', ''),
+        'embedding_ollama_base_url': getattr(app_config, 'embedding_ollama_base_url', ''),
+        'embedding_openai_base_url': getattr(app_config, 'embedding_openai_base_url', '')
+    }
 
 class TestTask(object):
     def __init__(self, test):
@@ -69,7 +91,11 @@ def simpleProgressBar(progress, total, color, bar_length = 50):
 
 def isResilient(test_status: TestStatus):
     "Define test as passed if there were no errors or failures during test run"
-    return test_status.breach_count == 0 and test_status.error_count == 0
+    return test_status.breach_count == 0 and test_status.error_count == 0 and test_status.skipped_count == 0
+
+def isSkipped(test_status: TestStatus):
+    "Define test as skipped if it has skipped count but no other results"
+    return test_status.skipped_count > 0 and test_status.breach_count == 0 and test_status.resilient_count == 0 and test_status.error_count == 0
 
 def fuzz_prompt_injections(client_config: ClientConfig, attack_config: AttackConfig, threads_count: int, custom_tests: List = None):
     print(f"{BRIGHT_CYAN}Running tests on your system prompt{RESET} ...")
@@ -92,6 +118,7 @@ def fuzz_prompt_injections(client_config: ClientConfig, attack_config: AttackCon
     RESILIENT = f"{GREEN}✔{RESET}"
     VULNERABLE = f"{RED}✘{RESET}"
     ERROR = f"{BRIGHT_YELLOW}⚠{RESET}"
+    SKIPPED = f"{ORANGE}⊘{RESET}"
 
     print_table(
         title = "Test results",
@@ -101,40 +128,51 @@ def fuzz_prompt_injections(client_config: ClientConfig, attack_config: AttackCon
             "Broken",
             "Resilient",
             "Errors",
+            "Skipped",
             "Strength",
         ],
         data = sorted([
             [
-                ERROR if test.status.error_count > 0 else RESILIENT if isResilient(test.status) else VULNERABLE,
+                SKIPPED if isSkipped(test.status) else ERROR if test.status.error_count > 0 else RESILIENT if isResilient(test.status) else VULNERABLE,
                 f"{test.test_name + ' ':.<{50}}",
                 test.status.breach_count,
                 test.status.resilient_count,
                 test.status.error_count,
-                simpleProgressBar(test.status.resilient_count, test.status.total_count, GREEN if isResilient(test.status) else RED),
+                test.status.skipped_count,
+                simpleProgressBar(test.status.resilient_count, test.status.total_count, GREEN if isResilient(test.status) else RED) if not isSkipped(test.status) else "N/A",
             ]
             for test in tests
         ], key=lambda x: x[1]),
         footer_row = [
-                ERROR if all(test.status.error_count > 0 for test in tests) else RESILIENT if all(isResilient(test.status) for test in tests) else VULNERABLE,
+                SKIPPED if all(isSkipped(test.status) for test in tests) else ERROR if all(test.status.error_count > 0 for test in tests) else RESILIENT if all(isResilient(test.status) for test in tests) else VULNERABLE,
                 f"{'Total (# tests): ':.<50}",
-                sum(not isResilient(test.status) for test in tests),
+                sum(test.status.breach_count > 0 for test in tests),
                 sum(isResilient(test.status) for test in tests),
                 sum(test.status.error_count > 0 for test in tests),
+                sum(isSkipped(test.status) for test in tests),
                 simpleProgressBar( # Total progress shows percentage of resilient tests among all tests
                     sum(isResilient(test.status) for test in tests),
-                    len(tests),
-                    GREEN if all(isResilient(test.status) for test in tests) else RED
+                    len([test for test in tests if not isSkipped(test.status)]),
+                    GREEN if all(isResilient(test.status) or isSkipped(test.status) for test in tests) else RED
                 ),
         ]
     )
 
     resilient_tests_count = sum(isResilient(test.status) for test in tests)
-    failed_tests = [f"{test.test_name}\n" if not isResilient(test.status) else "" for test in tests]
+    skipped_tests_count = sum(isSkipped(test.status) for test in tests)
+    failed_tests = [f"{test.test_name}\n" if not isResilient(test.status) and not isSkipped(test.status) else "" for test in tests]
+    skipped_tests = [f"{test.test_name}\n" if isSkipped(test.status) else "" for test in tests]
 
     total_tests_count = len(tests)
-    resilient_tests_percentage = resilient_tests_count / total_tests_count * 100 if total_tests_count > 0 else 0
-    print(f"Your system prompt passed {int(resilient_tests_percentage)}% ({resilient_tests_count} out of {total_tests_count}) of attack simulations.\n")
-    if resilient_tests_count < total_tests_count:
+    executed_tests_count = total_tests_count - skipped_tests_count
+    resilient_tests_percentage = resilient_tests_count / executed_tests_count * 100 if executed_tests_count > 0 else 0
+    
+    print(f"Your system prompt passed {int(resilient_tests_percentage)}% ({resilient_tests_count} out of {executed_tests_count}) of executed attack simulations.\n")
+    
+    if skipped_tests_count > 0:
+        print(f"{ORANGE}{skipped_tests_count} test(s) were skipped{RESET} due to missing configuration or dependencies:\n{ORANGE}{''.join(skipped_tests)}{RESET}")
+    
+    if resilient_tests_count < executed_tests_count:
         print(f"Your system prompt {BRIGHT_RED}failed{RESET} the following tests:\n{RED}{''.join(failed_tests)}{RESET}\n")
     print(f"To learn about the various attack types, please consult the help section and the Prompt Security Fuzzer GitHub README.")
     print(f"You can also get a list of all available attack types by running the command '{BRIGHT}prompt-security-fuzzer --list-attacks{RESET}'.")
@@ -155,7 +193,8 @@ def run_interactive_chat(app_config: AppConfig):
     app_config.print_as_table()
     target_system_prompt = app_config.system_prompt
     try:
-        target_client = ClientLangChain(app_config.target_provider, model=app_config.target_model, temperature=0)
+        kwargs = _build_client_kwargs(app_config, app_config.target_provider, app_config.target_model, 0)
+        target_client = ClientLangChain(app_config.target_provider, **kwargs)
         interactive_chat(client=target_client, system_prompts=[target_system_prompt])
     except (ModuleNotFoundError, ValidationError) as e:
         logger.warning(f"Error accessing the Target LLM provider {app_config.target_provider} with model '{app_config.target_model}': {colorama.Fore.RED}{e}{colorama.Style.RESET_ALL}")
@@ -167,16 +206,19 @@ def run_fuzzer(app_config: AppConfig):
     custom_benchmark = app_config.custom_benchmark
     target_system_prompt = app_config.system_prompt
     try:
-        target_client = ClientLangChain(app_config.target_provider, model=app_config.target_model, temperature=0)
+        target_kwargs = _build_client_kwargs(app_config, app_config.target_provider, app_config.target_model, 0)
+        target_client = ClientLangChain(app_config.target_provider, **target_kwargs)
     except (ModuleNotFoundError, ValidationError) as e:
         logger.warning(f"Error accessing the Target LLM provider {app_config.target_provider} with model '{app_config.target_model}': {colorama.Fore.RED}{e}{colorama.Style.RESET_ALL}")
         return
     client_config = ClientConfig(target_client, [target_system_prompt], custom_benchmark=custom_benchmark)
 
     try:
+        attack_kwargs = _build_client_kwargs(app_config, app_config.attack_provider, app_config.attack_model, app_config.attack_temperature)
         attack_config = AttackConfig(
-            attack_client = ClientLangChain(app_config.attack_provider, model=app_config.attack_model, temperature=app_config.attack_temperature),
-            attack_prompts_count = app_config.num_attempts
+            attack_client = ClientLangChain(app_config.attack_provider, **attack_kwargs),
+            attack_prompts_count = app_config.num_attempts,
+            embedding_config = _build_embedding_config(app_config)
         )
     except (ModuleNotFoundError, ValidationError) as e:
         logger.warning(f"Error accessing the Attack LLM provider {app_config.attack_provider} with model '{app_config.attack_model}': {colorama.Fore.RED}{e}{colorama.Style.RESET_ALL}")

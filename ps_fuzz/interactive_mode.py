@@ -39,6 +39,41 @@ def multi_line_editor(initial_text: str) -> str:
 def show_all_config(state: AppConfig):
     state.print_as_table()
 
+def prompt_provider_and_model(providers, default_provider, default_model, provider_message, model_message):
+    """Helper to prompt for provider and model, reducing duplication."""
+    result = inquirer.prompt([
+        inquirer.List('provider', message=provider_message, choices=providers, default=default_provider),
+        inquirer.Text('model', message=model_message, default=default_model),
+    ])
+    return result
+
+def prompt_base_url(provider, state, is_embedding=False):
+    """Helper to prompt for base URL based on provider, handling embedding-specific cases."""
+    if provider == 'ollama':
+        if is_embedding:
+            default_url = state.embedding_ollama_base_url or state.ollama_base_url
+            key = 'embedding_ollama_base_url'
+            message = "Ollama Embedding Base URL (leave empty to use main Ollama base URL or default localhost:11434)"
+        else:
+            default_url = state.ollama_base_url
+            key = 'ollama_base_url'
+            message = "Ollama Base URL (leave empty for default localhost:11434)"
+        result = inquirer.prompt([inquirer.Text(key, message=message, default=default_url)])
+        if result is not None:
+            setattr(state, key, result[key])
+    elif provider == 'open_ai':
+        if is_embedding:
+            default_url = state.embedding_openai_base_url or state.openai_base_url
+            key = 'embedding_openai_base_url'
+            message = "OpenAI Embedding Base URL (leave empty to use main OpenAI base URL or default api.openai.com)"
+        else:
+            default_url = state.openai_base_url
+            key = 'openai_base_url'
+            message = "OpenAI Base URL (leave empty for default api.openai.com)"
+        result = inquirer.prompt([inquirer.Text(key, message=message, default=default_url)])
+        if result is not None:
+            setattr(state, key, result[key])
+
 class MainMenu:
     # Used to recall the last selected item in this menu between invocations (for convenience)
     selected = None
@@ -53,6 +88,7 @@ class MainMenu:
             ['Fuzzer Configuration', None, FuzzerOptions],
             ['Target LLM Configuration', None, TargetLLMOptions],
             ['Attack LLM Configuration', None, AttackLLMOptions],
+            ['Embedding Configuration', None, EmbeddingOptions],
             ['Show all configuration', show_all_config, MainMenu],
             ['Exit', None, None],
         ]
@@ -104,21 +140,22 @@ class TargetLLMOptions:
         models_list = get_langchain_chat_models_info().keys()
         print("Target LLM Options: Review and modify the target LLM configuration")
         print("------------------------------------------------------------------")
-        result = inquirer.prompt([
-            inquirer.List(
-                'target_provider',
-                message="LLM Provider configured in the AI chat application being fuzzed",
-                choices=models_list,
-                default=state.target_provider
-            ),
-            inquirer.Text('target_model',
-                message="LLM Model configured in the AI chat application being fuzzed",
-                default=state.target_model
-            ),
-        ])
-        if result is None: return  # Handle prompt cancellation concisely
-        state.target_provider = result['target_provider']
-        state.target_model = result['target_model']
+        
+        # First get provider and model
+        basic_result = prompt_provider_and_model(
+            models_list, state.target_provider, state.target_model,
+            "LLM Provider configured in the AI chat application being fuzzed",
+            "LLM Model configured in the AI chat application being fuzzed"
+        )
+        if basic_result is None: return  # Handle prompt cancellation concisely
+        
+        # Update state with basic settings
+        state.target_provider = basic_result['provider']
+        state.target_model = basic_result['model']
+        
+        # Ask for base URL if provider is ollama or open_ai
+        prompt_base_url(state.target_provider, state)
+        
         return MainMenu
 
 class AttackLLMOptions:
@@ -127,21 +164,45 @@ class AttackLLMOptions:
         models_list = get_langchain_chat_models_info().keys()
         print("Attack LLM Options: Review and modify the service LLM configuration used by the tool to help attack the system prompt")
         print("---------------------------------------------------------------------------------------------------------------------")
-        result = inquirer.prompt([
-            inquirer.List(
-                'attack_provider',
-                message="Service LLM Provider used to help attacking the system prompt",
-                choices=models_list,
-                default=state.attack_provider
-            ),
-            inquirer.Text('attack_model',
-                message="Service LLM Model used to help attacking the system prompt",
-                default=state.attack_model
-            ),
-        ])
-        if result is None: return  # Handle prompt cancellation concisely
-        state.attack_provider = result['attack_provider']
-        state.attack_model = result['attack_model']
+        
+        # First get provider and model
+        basic_result = prompt_provider_and_model(
+            models_list, state.attack_provider, state.attack_model,
+            "Service LLM Provider used to help attacking the system prompt",
+            "Service LLM Model used to help attacking the system prompt"
+        )
+        if basic_result is None: return  # Handle prompt cancellation concisely
+        
+        # Update state with basic settings
+        state.attack_provider = basic_result['provider']
+        state.attack_model = basic_result['model']
+        
+        # Ask for base URL if provider is ollama or open_ai
+        prompt_base_url(state.attack_provider, state)
+        
+        return MainMenu
+
+class EmbeddingOptions:
+    @classmethod
+    def show(cls, state: AppConfig):
+        print("Embedding Options: Review and modify the embedding provider configuration")
+        print("--------------------------------------------------------------------------")
+        
+        # First get embedding provider and model
+        basic_result = prompt_provider_and_model(
+            ['ollama', 'open_ai'], state.embedding_provider, state.embedding_model,
+            "Embedding Provider for vector similarity search",
+            "Embedding Model for vector similarity search"
+        )
+        if basic_result is None: return  # Handle prompt cancellation concisely
+        
+        # Update state with basic settings
+        state.embedding_provider = basic_result['provider']
+        state.embedding_model = basic_result['model']
+        
+        # Ask for base URL based on selected provider
+        prompt_base_url(state.embedding_provider, state, is_embedding=True)
+        
         return MainMenu
 
 def interactive_shell(state: AppConfig):

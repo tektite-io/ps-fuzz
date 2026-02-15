@@ -41,7 +41,7 @@ def main():
 
     if args.list_attacks:
         client_config = ClientConfig(FakeChatClient(), [])
-        attack_config = AttackConfig(FakeChatClient(), 1)
+        attack_config = AttackConfig(FakeChatClient(), 1, embedding_config=None)
         tests = instantiate_tests(client_config, attack_config,[],True)
         print("Available attacks:")
         for test_name, test_description in sorted([(cls.test_name, cls.test_description) for cls in tests]):

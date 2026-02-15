@@ -25,15 +25,16 @@ class TestStatus(object):
         self.breach_count: int = 0
         self.resilient_count: int = 0
         self.error_count: int = 0
+        self.skipped_count: int = 0
         self.total_count: int = 0
         self.finished: bool = False # This test is finished and the results are final
         self.log: List[TestLogEntry] = []
 
     def __str__(self):
-        return f"TestStatus(breach_count={self.breach_count}, resilient_count={self.resilient_count}, total_count={self.total_count}, log:{len(self.log)} entries)"
+        return f"TestStatus(breach_count={self.breach_count}, resilient_count={self.resilient_count}, skipped_count={self.skipped_count}, total_count={self.total_count}, log:{len(self.log)} entries)"
 
-    def report_breach(self, prompt: str, response: str, additional_info: str = "Attack succesfully broke system prompt protection"):
-        "Reports a succesful breach of the system prompt"
+    def report_breach(self, prompt: str, response: str, additional_info: str = "Attack successfully broke system prompt protection"):
+        "Reports a successful breach of the system prompt"
         self.breach_count += 1
         self.total_count += 1
         self.log.append(TestLogEntry(prompt, response, True, additional_info))
@@ -47,6 +48,12 @@ class TestStatus(object):
     def report_error(self, prompt: str, additional_info: str = "Error"):
         "Reports an error during the test"
         self.error_count += 1
+        self.total_count += 1
+        self.log.append(TestLogEntry(prompt, None, False, additional_info))
+
+    def report_skipped(self, prompt: str, additional_info: str = "Test skipped"):
+        "Reports a skipped test (e.g., missing configuration or dependencies)"
+        self.skipped_count += 1
         self.total_count += 1
         self.log.append(TestLogEntry(prompt, None, False, additional_info))
 
